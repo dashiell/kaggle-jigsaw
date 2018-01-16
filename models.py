@@ -15,13 +15,24 @@ Build the following models:
 '''
 Keras CNN Model
 '''
-def build_cnn_model(ModelParams, filters = 100):
+def build_cnn_model(model_params, data, filters = 100):
     
     # model input
-    inp = Input(shape = (ModelParams['emb_input_seq_len'], ))
+    inp = Input(shape = (model_params['emb_input_seq_len'], ))
     
     # word embedding layer
-    x = Embedding(input_dim = ModelParams['emb_vocab_size'], output_dim = ModelParams['emb_out_size']) (inp)
+    
+    if model_params['use_glove']:
+        print('using glove embeddings')
+        x = Embedding(input_dim = model_params['emb_vocab_size'], 
+                      output_dim = model_params['emb_out_size'],
+                      weights = [data['embedding_matrix']],
+                      input_length = model_params['emb_input_seq_len'],
+                      trainable = False
+                      ) (inp)
+    else:
+        x = Embedding(input_dim = model_params['emb_vocab_size'], 
+                      output_dim = model_params['emb_out_size']) (inp)
     
     # Regularization
     prefilt_x = Dropout(0.25) (x)
@@ -53,7 +64,7 @@ def build_cnn_model(ModelParams, filters = 100):
     x = Dropout(0.1) (x)
     x = Dense(32, activation='elu', kernel_regularizer=keras.regularizers.l2(0.01)) (x)
     x = Dropout(0.1)(x)
-    x = Dense(ModelParams['model_output_size'], activation = 'sigmoid') (x)
+    x = Dense(data['y_train'].shape[1], activation = 'sigmoid') (x)
     
     model = Model(inputs = inp, outputs = x)
     
@@ -65,10 +76,20 @@ def build_cnn_model(ModelParams, filters = 100):
 Keras Bidirectional RNN Model
 '''
 
-def build_rnn_model(ModelParams, n_units = 64):
-    inp = Input(shape = (ModelParams['emb_input_seq_len'],))
+def build_rnn_model(model_params, data, n_units = 64):
+    inp = Input(shape = (model_params['emb_input_seq_len'],))
     
-    x = Embedding(input_dim = ModelParams['emb_vocab_size'], output_dim = ModelParams['emb_out_size']) (inp)
+    if model_params['use_glove']:
+        print('using glove embeddings')
+        x = Embedding(input_dim = model_params['emb_vocab_size'], 
+                      output_dim = model_params['emb_out_size'],
+                      weights = [data['embedding_matrix']],
+                      input_length = model_params['emb_input_seq_len'],
+                      trainable = False
+                      ) (inp)
+    else:
+        x = Embedding(input_dim = model_params['emb_vocab_size'], 
+                      output_dim = model_params['emb_out_size']) (inp)
     
     lstm = LSTM(return_sequences = True, units = n_units)
     #gru = GRU(return_sequences = True, units = 64)
@@ -84,7 +105,7 @@ def build_rnn_model(ModelParams, n_units = 64):
     x = Dropout(0.1) (x)
     x = Dense(32, activation = 'relu') (x)
     x = Dropout(0.1) (x)
-    x = Dense(ModelParams['model_output_size'], activation = 'sigmoid') (x)
+    x = Dense(data['y_train'].shape[1], activation = 'sigmoid') (x)
     
     model = Model(inputs = inp, outputs = x)
 

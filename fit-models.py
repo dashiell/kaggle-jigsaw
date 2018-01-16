@@ -1,45 +1,60 @@
 """
 Fit the model on the training set, test on validation set
 """
-import data
+import dataset
 import models
+from keras.callbacks import EarlyStopping, ModelCheckpoint
 
-#data.create_train_test()
-#data.create_train_test(nrows_train=20000, nrows_test=50)
-#data.create_valid(test_size=0.2)
+CNN_CHECKPOINT = 'cnn_checkpoint.hdf5'
+RNN_CHECKPOINT = 'rnn_checkpoint.hdf5'
 
+def fit(model, checkpoint_path):
 
-def fit(model):
-
-    model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy'])   
+    # define callbacks
+    cb_earlystop = EarlyStopping(patience=3)
+    cb_checkpoint = ModelCheckpoint(checkpoint_path, 
+                                 monitor='val_loss', 
+                                 verbose=1,
+                                 save_best_only=True, 
+                                 mode='min')
     
-    model.fit(Data['X_train'], Data['y_train'], 
-              epochs = 1, 
+    model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy'])   
+
+    model.fit(data['X_train'], data['y_train'], 
+              epochs = 20, 
               batch_size = 128,  
-              #callbacks = [checkpoint_cb],
-              validation_data = (Data['X_valid'], Data['y_valid']),
+              callbacks = [cb_earlystop, cb_checkpoint],
+              validation_data = (data['X_valid'], data['y_valid']),
               shuffle = True
             )
-    '''
-    y_preds = model.predict(padded_seq_test, batch_size=128)
     
-    submit = pd.DataFrame()
     
-    submit['id'] = test.loc[:, 'id']
-    
-    submit = pd.concat([submit, pd.DataFrame(y_preds, columns=y_cols)], axis=1)
-    submit.to_csv('submission.csv', index=False)
     '''
 
+    '''
+    
+# load the model_params and data dictionaries (see data.py)
+data, model_params = dataset.load(validation_size = 0.1, use_glove = True)
 
-
-# load the ModelParams and Data dictionaries (see data.py)
-ModelParams, Data = data.load(with_validation_set = True)
-
-# specify the model to build
-model = models.build_rnn_model(ModelParams)
+# build the model
+cnn_model = models.build_cnn_model(model_params, data)
+rnn_model = models.build_rnn_model(model_params, data)
 
 # fit the model
-fit(model)
+
+fit(cnn_model, CNN_CHECKPOINT)
+fit(rnn_model, RNN_CHECKPOINT)
 
 
+####
+import pandas as pd
+test = pd.read_csv('../input/test.csv')
+
+y_preds = cnn_model.predict(data['X_test'], batch_size=128)
+    
+submit = pd.DataFrame()
+    
+submit['id'] = test.loc[:, 'id']
+    
+submit = pd.concat([submit, pd.DataFrame(y_preds, columns=data['y_cols'])], axis=1)
+submit.to_csv('submission.csv', index=False)
