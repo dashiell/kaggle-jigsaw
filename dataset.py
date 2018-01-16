@@ -40,8 +40,7 @@ data = {
         }
         
 model_params = {
-        
-        'emb_input_seq_len' : 120, # length of padded input vecors, as determined by histogram
+        'emb_input_seq_len' : 150, # length of padded input vecors, as determined by histogram
         'emb_out_size' : 300, # size of embedding vector
         'emb_vocab_size' : None,
         'use_glove' : True # use pre-trained word embeddings
@@ -181,14 +180,16 @@ def get_embedding_matrix(tokenizer):
 
 
 
-def load(validation_size = .05, use_glove = True):
+def load(validation_size = .05, use_glove = True, force_rebuild = False):
     """loads the train, test, and optional validation sets.  Also loads the 
     glove word embedding matrix, if use_glove is True
     
+    ** use force_rebuild=True if you changed something like emb_input_seq_len or 
+    added new features
     """
     data_path = DATA_TTV_PATH if validation_size > 0 else DATA_TT_PATH    
 
-    if not path.exists(data_path):
+    if not path.exists(data_path) or force_rebuild:
         # create the data dictionary with training set, test set, embeddings
         _create(use_glove)
     
