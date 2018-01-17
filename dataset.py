@@ -6,6 +6,22 @@ import pickle
 from os import path
 #import matplotlib.pyplot as plt
 
+##### TODO
+# add features:
+# percentage_caps - percentage of the sentence that is in caps
+# contains_url 
+# contains_country 
+# contains_ethnicity (slavic, white)
+# contains_badword
+# has negative word (... or do sentiment analysis...)
+# length of original text
+# uniqueness: number of unique words in text / total number of words
+# of words not in embedding / total words
+# contains_ip_addr 
+# contains_condescending words
+# contains_date ( like (UTC) see examples... few negative)
+# contanis_nice ( e.g. Hello, Welcome, Hey, )
+
 GLOVE_PATH = '../input/glove.840B.300d.txt'
 TRAIN_PATH = '../input/train.csv'
 TEST_PATH = '../input/test.csv'

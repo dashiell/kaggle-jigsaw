@@ -3,6 +3,7 @@ from keras.layers import Dropout, LSTM, GRU, Bidirectional
 from keras.layers import Activation
 from keras.layers.merge import concatenate
 from keras.models import Model
+from multiplicative_lstm import MultiplicativeLSTM
 import keras
 
 """
@@ -76,7 +77,7 @@ def build_cnn_model(model_params, data, filters = 100):
 Keras Bidirectional RNN Model
 '''
 
-def build_rnn_model(model_params, data, n_units = 64):
+def build_lstm_model(model_params, data, n_units = 64):
     inp = Input(shape = (model_params['emb_input_seq_len'],))
     
     if model_params['use_glove']:
@@ -92,6 +93,7 @@ def build_rnn_model(model_params, data, n_units = 64):
                       output_dim = model_params['emb_out_size']) (inp)
     
     lstm = LSTM(return_sequences = True, units = n_units)
+    #mlstm = MultiplicativeLSTM(units = n_units, dropout = 0.2, recurrent_dropout = 0.2)
     #gru = GRU(return_sequences = True, units = 64)
     
     x = Bidirectional(lstm) (x)
@@ -101,6 +103,47 @@ def build_rnn_model(model_params, data, n_units = 64):
     
     x = GlobalMaxPool1D() (x)
     x = Dropout(0.25) (x)
+    x = Dense(64, activation = 'relu') (x)
+    x = Dropout(0.1) (x)
+    x = Dense(32, activation = 'relu') (x)
+    x = Dropout(0.1) (x)
+    x = Dense(data['y_train'].shape[1], activation = 'sigmoid') (x)
+    
+    model = Model(inputs = inp, outputs = x)
+
+    return model
+
+'''
+Keras Bidirectional RNN Model
+'''
+
+def build_mlstm_model(model_params, data, n_units = 128):
+    inp = Input(shape = (model_params['emb_input_seq_len'],))
+    
+    if model_params['use_glove']:
+        print('using glove embeddings')
+        x = Embedding(input_dim = model_params['emb_vocab_size'], 
+                      output_dim = model_params['emb_out_size'],
+                      weights = [data['embedding_matrix']],
+                      input_length = model_params['emb_input_seq_len'],
+                      trainable = False
+                      ) (inp)
+    else:
+        x = Embedding(input_dim = model_params['emb_vocab_size'], 
+                      output_dim = model_params['emb_out_size']) (inp)
+    
+
+    # try with return_sequences = True and put back maxpooling
+    mlstm = MultiplicativeLSTM(return_sequences = True, 
+                               units = n_units, 
+                               dropout = 0.2, 
+                               recurrent_dropout = 0.2)
+
+        
+    x = Bidirectional(mlstm) (x)
+    
+    x = GlobalMaxPool1D() (x)
+    x = Dropout(0.5) (x)
     x = Dense(64, activation = 'relu') (x)
     x = Dropout(0.1) (x)
     x = Dense(32, activation = 'relu') (x)
