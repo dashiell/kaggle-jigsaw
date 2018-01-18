@@ -163,14 +163,6 @@ def load(use_glove = True):
     embed_dict = pickle.load(open(EMBED_DICT_PATH, 'rb'))
         
     embed_dict['use_glove'] = use_glove
-        
-    #X_train, X_valid, y_train, y_valid = get_train_valid(X_train, y_train, 0.1)
-    
-    #data['X_train'] = _get_keras_dict(comment_text_train, tok)
-    #data['X_valid'] = _get_keras_dict(comment_text_valid, tok)
-    #data['X_test'] = _get_keras_dict(test.comment_text, tok)
-    #data['y_train'] = y_train
-    #data['y_valid'] = y_valid
-              
+                    
     
     return X_train, X_test, y_train, embed_dict

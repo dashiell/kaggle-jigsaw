@@ -6,20 +6,15 @@
 Fit the model on the training set, test on validation set
 """
 import dataset
-import models
+from Models import BuildModels
 from keras.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.model_selection import StratifiedKFold
+from keras import backend as K
 import numpy as np
 import gc
 
-
-CNN_CHECKPOINT = 'cnn_checkpoint.hdf5'
-RNN_CHECKPOINT = 'rnn_checkpoint.hdf5'
-RNN_M_CHECKPOINT = 'rnn_m_checkpoint.hdf5' # lazy, just changed in model by hand.
-
-PATH_YH_TRAIN_ALL = 'yh_train_all.npy'
-PATH_YH_VAL_ALL = 'yh_train_all.npy'
-PATH_YH_TEST_ALL = 'yh_test_all.npy'
+TRAIN_META_PATH = '../input/train-meta.npy'
+TEST_META_PATH = '../input/test-meta.npy'
 
 def fit(x1, x2, y1, y2, model, batch_size, checkpoint_path):
 
@@ -45,7 +40,7 @@ def fit(x1, x2, y1, y2, model, batch_size, checkpoint_path):
     #data['X_train']['has_utc'] = np.array(data['X_train']['has_utc'])
 
     model.fit(x1, y1, 
-              epochs = 20, 
+              epochs = 1, 
               batch_size = batch_size,  
               callbacks = [cb_earlystop, cb_checkpoint],
               validation_data = (x2, y2),
@@ -57,99 +52,88 @@ def fit(x1, x2, y1, y2, model, batch_size, checkpoint_path):
 # load the embed_dict and data dictionaries (see data.py)
 X_train, X_test, y_train, embed_dict = dataset.load()
 
+build_models = BuildModels(embed_dict)
+
 # build the model
 
 #lstm_model = models.build_lstm_model(embed_dict)
 #mlstm_model = models.build_mlstm_model(embed_dict)
 
 # predict on oof and test
-n_splits = 10
+
+all_models = [build_models.cnn, build_models.lstm, build_models.mlstm]
+
+train_meta_preds = np.zeros((y_train.shape[0], y_train.shape[1]*len(all_models)))
+test_meta_preds = np.zeros((X_test.shape[0], y_train.shape[1]*len(all_models)))
+
+n_splits = 5
 
 skf = StratifiedKFold(n_splits=n_splits, shuffle=True )
 
 any_positive_cat = np.sum(y_train, axis = 1)
 
-# the out of fold predictions
-oof_preds = np.zeros(shape=y_train.shape)
-
-# full test set predictions
-test_preds = []
-for i in np.arange(0, n_splits):
-    test_preds.append( np.zeros(shape=(X_test.shape[0], 6)) )
+for curr_model in all_models:
+    model_ix = 0
     
-
-fold = 0
-
-X_test_keras = dataset.get_keras_dict(embed_dict, X_test)
-
-for train_index, valid_index in skf.split(X_train, any_positive_cat):
-    cnn_model = models.build_cnn_model(embed_dict)
-    x1, x2 = X_train[train_index], X_train[valid_index]
-    y1, y2 = y_train[train_index], y_train[valid_index]
+    # the out of fold predictions
+    oof_preds = np.zeros(shape=y_train.shape)
     
-    # X_train, X_valid for keras
-    x1k = dataset.get_keras_dict(embed_dict, x1)
-    x2k = dataset.get_keras_dict(embed_dict, x2)
+    # full test set predictions
+    test_preds = []
+    for i in np.arange(0, n_splits):
+        test_preds.append( np.zeros(shape=(X_test.shape[0], 6)) )
+        
+    fold = 0
     
+    X_test_keras = dataset.get_keras_dict(embed_dict, X_test)
     
-    fit(x1k,x2k,y1,y2, model = cnn_model, batch_size = 128, checkpoint_path = CNN_CHECKPOINT)
-    cnn_model.load_weights(CNN_CHECKPOINT)
-    cnn_model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy'])
+    for train_index, valid_index in skf.split(X_train, any_positive_cat):
+        model = curr_model()
+        x1, x2 = X_train[train_index], X_train[valid_index]
+        y1, y2 = y_train[train_index], y_train[valid_index]
+        
+        # X_train, X_valid for keras
+        x1k = dataset.get_keras_dict(embed_dict, x1)
+        x2k = dataset.get_keras_dict(embed_dict, x2)
+        
+        checkpoint_path = "checkpoint-%s.hdf5" % (curr_model.__name__)
+        fit(x1k,x2k,y1,y2, model = model, batch_size = 128, checkpoint_path = checkpoint_path)
+        model.load_weights(checkpoint_path)
+        model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy'])
+        
+        # create the out-of-fold predictions 
+        oof_preds[valid_index] = model.predict(x2k, batch_size = 128)
+        # create the predictions on the test set
+        test_preds[fold] = model.predict(X_test_keras, batch_size = 128)
+        
+        fold +=1
+        
+        # free up some system and GPU memory for the next fit
+        del model
+        gc.collect()
+        K.clear_session()
     
-    # create the out-of-fold predictions 
-    oof_preds[valid_index] = cnn_model.predict(x2k, batch_size = 128)
-    # create the predictions on the test set
-    test_preds[fold] = cnn_model.predict(X_test_keras, batch_size = 128)
+    # get mean of all the test_pred matrices
+    test_mean = np.mean(test_preds, axis=0)
     
-    del cnn_model
-    gc.collect()
-
-# get mean of all the test_pred matrices
-test_mean = np.mean(test_preds, axis=0)
+    first_col = model_ix * 6
+    last_col = first_col + 6
+    
+    # put the model oof predictions into a big matrix of all model preds
+    train_meta_preds[:, first_col:last_col] = oof_preds
+    # put the models test predictions into a matrix of all model preds
+    test_meta_preds[:, first_col:last_col] = test_mean
+    
+    # save this for 
+    np.save(TRAIN_META_PATH, train_meta_preds)
+    np.save(TEST_META_PATH, test_meta_preds)
+    
+    model_ix += 1
 
 '''
 
 # fit the model
 
-#.431 (1,20)
-#fit(model = cnn_model, batch_size = 128, checkpoint_path = CNN_CHECKPOINT)
-#fit(model = lstm_model, batch_size = 128, checkpoint_path = RNN_CHECKPOINT)
-#fit(model = mlstm_model, batch_size = 128, checkpoint_path = RNN_M_CHECKPOINT)
-
-### TODO.. .this should be built on the oof predictions of k-fold CV fitted models.  But....
-# that will take forever to train.
-# at least rebuild the validation set before fitting each model next time, to approximate this.
-
-cnn_model.load_weights(CNN_CHECKPOINT)
-cnn_model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy']) 
-y_tr_cnn = cnn_model.predict(data['X_train'], batch_size = 128)
-y_v_cnn =  cnn_model.predict(data['X_valid'], batch_size = 128)
-y_pred_cnn = cnn_model.predict(data['X_test'], batch_size = 128)
-del cnn_model; gc.collect()
-print('done')
-lstm_model.load_weights(RNN_CHECKPOINT)
-lstm_model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy']) 
-y_tr_lstm = lstm_model.predict(data['X_train'], batch_size = 128)
-y_v_lstm =  lstm_model.predict(data['X_valid'], batch_size = 128)
-y_pred_lstm = lstm_model.predict(data['X_test'], batch_size = 128)
-del lstm_model; gc.collect()
-print('done')
-mlstm_model.load_weights(RNN_M_CHECKPOINT)
-mlstm_model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy']) 
-y_tr_mlstm = mlstm_model.predict(data['X_train'], batch_size = 128)
-y_v_mlstm = mlstm_model.predict(data['X_valid'], batch_size = 128)
-y_pred_mlstm = mlstm_model.predict(data['X_test'], batch_size = 128)
-del mlstm_model; gc.collect()
-print('done')
-
-
-y_tr_all = np.hstack((y_tr_cnn, y_tr_lstm, y_tr_mlstm))
-y_v_all = np.hstack((y_v_cnn, y_v_lstm, y_v_mlstm))
-y_te_all = np.hstack((y_pred_cnn, y_pred_lstm, y_pred_mlstm))
-
-np.save(PATH_YH_TRAIN_ALL, y_tr_all)
-np.save(PATH_YH_VAL_ALL, y_v_all)
-np.save(PATH_YH_TEST_ALL, y_te_all)
 
 ensemble = models.build_ensemble(y_preds_all, data)
 ensemble.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy'])
