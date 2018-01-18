@@ -13,8 +13,8 @@ from keras import backend as K
 import numpy as np
 import gc
 
-TRAIN_META_PATH = '../input/train-meta.npy'
-TEST_META_PATH = '../input/test-meta.npy'
+TRAIN_META_PATH = '../meta/train.npy'
+TEST_META_PATH = '../meta/test.npy'
 
 def fit(x1, x2, y1, y2, model, batch_size, checkpoint_path):
 
@@ -40,7 +40,7 @@ def fit(x1, x2, y1, y2, model, batch_size, checkpoint_path):
     #data['X_train']['has_utc'] = np.array(data['X_train']['has_utc'])
 
     model.fit(x1, y1, 
-              epochs = 1, 
+              epochs = 20, 
               batch_size = batch_size,  
               callbacks = [cb_earlystop, cb_checkpoint],
               validation_data = (x2, y2),
@@ -66,14 +66,14 @@ all_models = [build_models.cnn, build_models.lstm, build_models.mlstm]
 train_meta_preds = np.zeros((y_train.shape[0], y_train.shape[1]*len(all_models)))
 test_meta_preds = np.zeros((X_test.shape[0], y_train.shape[1]*len(all_models)))
 
-n_splits = 5
-
-skf = StratifiedKFold(n_splits=n_splits, shuffle=True )
+n_splits = 10
 
 any_positive_cat = np.sum(y_train, axis = 1)
 
+X_test_keras = dataset.get_keras_dict(embed_dict, X_test)
+
+model_ix = 0
 for curr_model in all_models:
-    model_ix = 0
     
     # the out of fold predictions
     oof_preds = np.zeros(shape=y_train.shape)
@@ -83,10 +83,9 @@ for curr_model in all_models:
     for i in np.arange(0, n_splits):
         test_preds.append( np.zeros(shape=(X_test.shape[0], 6)) )
         
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True )
+    
     fold = 0
-    
-    X_test_keras = dataset.get_keras_dict(embed_dict, X_test)
-    
     for train_index, valid_index in skf.split(X_train, any_positive_cat):
         model = curr_model()
         x1, x2 = X_train[train_index], X_train[valid_index]

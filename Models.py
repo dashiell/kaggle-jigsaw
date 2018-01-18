@@ -22,8 +22,6 @@ class BuildModels(object):
     Keras CNN Model
     '''
 
-
-
     def cnn(self, n_filters = 100):
         
         # model input
