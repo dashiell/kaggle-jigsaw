@@ -1,5 +1,6 @@
 ### TODO
 # hyper-parameter optimization using bayesian optimization & gaussian process from scikit- optimize
+# stop passing around embed_dict; make dataset a singleton
 
 """
 Fit the model on the training set, test on validation set
@@ -7,6 +8,7 @@ Fit the model on the training set, test on validation set
 import dataset
 import models
 from keras.callbacks import EarlyStopping, ModelCheckpoint
+from sklearn.model_selection import StratifiedKFold
 import numpy as np
 import gc
 
@@ -19,13 +21,13 @@ PATH_YH_TRAIN_ALL = 'yh_train_all.npy'
 PATH_YH_VAL_ALL = 'yh_train_all.npy'
 PATH_YH_TEST_ALL = 'yh_test_all.npy'
 
-def fit(model, batch_size, checkpoint_path):
+def fit(x1, x2, y1, y2, model, batch_size, checkpoint_path):
 
     # define callbacks
     cb_earlystop = EarlyStopping(
             monitor = 'val_loss',
             mode = 'min',
-            patience = 3,
+            patience = 2,
             min_delta = .001,
             #save_best_only=True
             )
@@ -42,23 +44,70 @@ def fit(model, batch_size, checkpoint_path):
     #import numpy as np
     #data['X_train']['has_utc'] = np.array(data['X_train']['has_utc'])
 
-    model.fit(data['X_train'], data['y_train'], 
+    model.fit(x1, y1, 
               epochs = 20, 
               batch_size = batch_size,  
               callbacks = [cb_earlystop, cb_checkpoint],
-              validation_data = (data['X_valid'], data['y_valid']),
-              shuffle = True
+              validation_data = (x2, y2),
+              shuffle = False
             )
     
 
     
-# load the model_params and data dictionaries (see data.py)
-data, model_params = dataset.load(validation_size = 0.1, use_glove = True)#, force_rebuild = True)
+# load the embed_dict and data dictionaries (see data.py)
+X_train, X_test, y_train, embed_dict = dataset.load()
 
 # build the model
-cnn_model = models.build_cnn_model(model_params, data)
-lstm_model = models.build_lstm_model(model_params, data)
-mlstm_model = models.build_mlstm_model(model_params, data)
+
+#lstm_model = models.build_lstm_model(embed_dict)
+#mlstm_model = models.build_mlstm_model(embed_dict)
+
+# predict on oof and test
+n_splits = 10
+
+skf = StratifiedKFold(n_splits=n_splits, shuffle=True )
+
+any_positive_cat = np.sum(y_train, axis = 1)
+
+# the out of fold predictions
+oof_preds = np.zeros(shape=y_train.shape)
+
+# full test set predictions
+test_preds = []
+for i in np.arange(0, n_splits):
+    test_preds.append( np.zeros(shape=(X_test.shape[0], 6)) )
+    
+
+fold = 0
+
+X_test_keras = dataset.get_keras_dict(embed_dict, X_test)
+
+for train_index, valid_index in skf.split(X_train, any_positive_cat):
+    cnn_model = models.build_cnn_model(embed_dict)
+    x1, x2 = X_train[train_index], X_train[valid_index]
+    y1, y2 = y_train[train_index], y_train[valid_index]
+    
+    # X_train, X_valid for keras
+    x1k = dataset.get_keras_dict(embed_dict, x1)
+    x2k = dataset.get_keras_dict(embed_dict, x2)
+    
+    
+    fit(x1k,x2k,y1,y2, model = cnn_model, batch_size = 128, checkpoint_path = CNN_CHECKPOINT)
+    cnn_model.load_weights(CNN_CHECKPOINT)
+    cnn_model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy'])
+    
+    # create the out-of-fold predictions 
+    oof_preds[valid_index] = cnn_model.predict(x2k, batch_size = 128)
+    # create the predictions on the test set
+    test_preds[fold] = cnn_model.predict(X_test_keras, batch_size = 128)
+    
+    del cnn_model
+    gc.collect()
+
+# get mean of all the test_pred matrices
+test_mean = np.mean(test_preds, axis=0)
+
+'''
 
 # fit the model
 
@@ -102,8 +151,6 @@ np.save(PATH_YH_TRAIN_ALL, y_tr_all)
 np.save(PATH_YH_VAL_ALL, y_v_all)
 np.save(PATH_YH_TEST_ALL, y_te_all)
 
-
-'''
 ensemble = models.build_ensemble(y_preds_all, data)
 ensemble.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy'])
 ensemble.fit(data['X_train'], data['y_train'], 
