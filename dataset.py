@@ -1,9 +1,11 @@
 import pandas as pd
 import numpy as np
 from keras.preprocessing import text, sequence
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
 import pickle
 from os import path
+import gc
 #import matplotlib.pyplot as plt
 
 ##### TODO
@@ -26,8 +28,8 @@ GLOVE_PATH = '../input/glove.840B.300d.txt'
 TRAIN_PATH = '../input/train.csv'
 TEST_PATH = '../input/test.csv'
 MODEL_PARAMS_PATH = '../input/model_params.pkl'
-DATA_TT_PATH = '../input/data_novalidationset.pkl' # train, test
-DATA_TTV_PATH = '../input/data_validationset.pkl' # train, test, validation
+DATA_PATH = '../input/data.pkl' # train, test, validation
+
 
 LOGGING = True
 
@@ -39,19 +41,16 @@ LOGGING = True
 
 data = {
         # padded sequence vectors; nparray with shape (nrows_train, model_params['emb_input_seq_len'])
-        'X_train' : None, 
-        'X_test' : None,
-        'X_valid' : None, 
+        'X_train' : {}, 
+        'X_test' : {}, 
+        'X_valid' : {}, 
         # nparray of shape (nrows_train, len(y_cols))
         'y_train' : None, 
         'y_valid' : None, 
         
-        'y_cols' : ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate'], # column names of the response
-        
-        'nrows_train' : 0,
-        'nrows_test' : 0,
-        'nrows_valid' : 0,
-        
+        # column names of the response
+        'y_cols' : ['toxic', 'severe_toxic', 'obscene', 'threat', 'insult', 'identity_hate'],
+              
         'embedding_matrix' : None   # pre-trained glove word embedding matrix
         }
         
@@ -62,6 +61,12 @@ model_params = {
         'use_glove' : True # use pre-trained word embeddings
         }
 
+def _create_features(df):
+    
+    # 2.8% of train text with (UTC) has positive y. 10.2% with no UTC has positive.
+    has_utc = pd.get_dummies( df['comment_text'].str.contains('(UTC)') )
+        
+    pd.concat([df, has_utc])
 
 def _create(use_glove):
     '''Adds X_train, X_test, y_train to the data dictionary.
@@ -78,23 +83,18 @@ def _create(use_glove):
         print('creating train and test set, word emb')
     
     train = pd.read_csv(TRAIN_PATH)
+    y_train = train.loc[:, data['y_cols']].values
     test = pd.read_csv(TEST_PATH)
+    test.comment_text.fillna('notextatall', inplace = True)
     
-    data['y_train'] = train.loc[:, data['y_cols']].values
-    
-    data['nrows_train'] = train.shape[0]
-    data['nrows_test'] = test.shape[0]
-    
+
     #### 
     #Generate padded sequences from the train and test comment_text
     ####
-    
-    # test has 1 nan. 
-    test.comment_text.fillna('notextatall', inplace = True)
-    
+        
     # all of the raw text data in the training and test set.
-    all_comment_text = np.hstack([train.comment_text, test.comment_text])
-    
+    all_comment_text = pd.concat((train.comment_text, test.comment_text), axis=0)
+        
     # converts text to sequences of integers
     tok = text.Tokenizer()
     
@@ -104,47 +104,70 @@ def _create(use_glove):
     # The number of unique words in raw_text. 
     model_params['emb_vocab_size'] = len(tok.word_index) + 1
     
-    # integer encode each word in each document (sample). 
-    seq_train = tok.texts_to_sequences(train.comment_text)
-    seq_test = tok.texts_to_sequences(test.comment_text)
-    
+
     # Use a histogram to determine the max sequence length in order to limit the 
     # network size.  Used to set model_params['emb_input_seq_len']
     #doc_lengths = [len(doc) for doc in seq_train] 
     #plt.histogram(doc_lengths, num_bins=1)
+
     
-    # make all sequences the same length for keras by padding them with 0s
-    data['X_train'] = sequence.pad_sequences(seq_train, maxlen = model_params['emb_input_seq_len'])
-    data['X_test'] = sequence.pad_sequences(seq_test, maxlen = model_params['emb_input_seq_len'])
+    comment_text_train, comment_text_valid, y_train, y_valid = _get_validation_set(
+            train.comment_text, y_train, 0.1
+            )
     
-    get_embedding_matrix(tok)
+    data['X_train'] = _get_keras_dict(comment_text_train, tok)
+    data['X_valid'] = _get_keras_dict(comment_text_valid, tok)
+    data['X_test'] = _get_keras_dict(test.comment_text, tok)
+    data['y_train'] = y_train
+    data['y_valid'] = y_valid
+        
+    if use_glove:
+        get_embedding_matrix(tok)
        
     pickle.dump(model_params, open(MODEL_PARAMS_PATH, 'wb'))
-    pickle.dump(data, open(DATA_TT_PATH, 'wb'))
+    pickle.dump(data, open(DATA_PATH, 'wb'))
 
 
-def _create_validation_set(test_size):
-    '''
-    Adds X_valid, y_valid to the data dictionary.
-    '''
-    if LOGGING:
-        print('creating validation set')
+def _get_keras_dict(comment_text, tokenizer):
+    # integer encode each word in each document / sample. 
+    seq_comment_text = tokenizer.texts_to_sequences(comment_text)
     
-    data = pickle.load(open(DATA_TT_PATH, 'rb'))
+    # make all sequences the same length for keras by padding them with 0s
+    padded_seq = sequence.pad_sequences(seq_comment_text, maxlen = model_params['emb_input_seq_len'])
     
-    any_positive_category = np.sum(data['y_train'], axis = 1)
+    #encoder = OneHotEncoder()
+    has_utc = comment_text.str.contains('(UTC)').values.reshape(-1,1)
+    #has_utc = encoder.fit_transform(has_utc).toarray()
+    
+    #### TODO: normalize
+    pct_caps = comment_text.str.count(r'[A-Z]') / comment_text.str.len()
+    
+    has_ipaddr = comment_text.str.contains(r'\d{1,3}.\d{1,3}.\d{1,3}.\d{1,3}')
+    
+    #### TODO: add list of ethnicities..
+    has_ethnicity = comment_text.str.contains(r'jew', case=False)
+    X = {
+            'comment_text' : padded_seq,
+            'has_utc' : has_utc,
+            'pct_caps' : pct_caps,
+            'has_ethnicity' : has_ethnicity,
+            'has_ipaddr' : has_ipaddr
+            }
+    return X
 
-    data['X_train'], data['X_valid'], data['y_train'], data['y_valid'] = train_test_split(
-        data['X_train'], 
-        data['y_train'],
-        test_size = test_size,
-        stratify = any_positive_category,
+def _get_validation_set(X_train, y_train, test_size):
+    
+    any_positive_category = np.sum(y_train, axis = 1)
+
+    X_train, X_valid, y_train, y_valid = train_test_split(
+            X_train, 
+            y_train,
+            test_size = test_size,
+            stratify = any_positive_category,
         )
     
-    data['nrows_train'] = data['X_train'].shape[0]
-    data['nrows_valid'] = data['X_valid'].shape[0]
-    
-    pickle.dump(data, open(DATA_TTV_PATH, 'wb'))
+    return X_train, X_valid, y_train, y_valid
+
 
 '''
     returns the model_params and data dictionaries
@@ -202,21 +225,18 @@ def load(validation_size = .05, use_glove = True, force_rebuild = False):
     
     ** use force_rebuild=True if you changed something like emb_input_seq_len or 
     added new features
-    """
-    data_path = DATA_TTV_PATH if validation_size > 0 else DATA_TT_PATH    
+    """ 
 
-    if not path.exists(data_path) or force_rebuild:
+    if not path.exists(DATA_PATH) or force_rebuild:
         # create the data dictionary with training set, test set, embeddings
         _create(use_glove)
     
-    data = pickle.load(open(data_path, 'rb'))
-    
-    if validation_size > 0:
-        _create_validation_set(validation_size)
-        
+    data = pickle.load(open(DATA_PATH, 'rb'))
     model_params = pickle.load(open(MODEL_PARAMS_PATH, 'rb'))
     
     if use_glove:
         model_params['use_glove'] = True
+    
+    print('finished loading')
     
     return data, model_params

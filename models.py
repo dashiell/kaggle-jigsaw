@@ -1,6 +1,6 @@
 from keras.layers import Input, Embedding, Conv1D, GlobalMaxPool1D, Dense 
 from keras.layers import Dropout, LSTM, GRU, Bidirectional
-from keras.layers import Activation
+from keras.layers import Activation, Flatten
 from keras.layers.merge import concatenate
 from keras.models import Model
 from multiplicative_lstm import MultiplicativeLSTM
@@ -16,27 +16,35 @@ Build the following models:
 '''
 Keras CNN Model
 '''
-def build_cnn_model(model_params, data, filters = 100):
+def build_cnn_model(model_params, data, n_filters = 100):
     
     # model input
-    inp = Input(shape = (model_params['emb_input_seq_len'], ))
+    comment_text = Input(shape = (model_params['emb_input_seq_len'], ), name='comment_text')
+    has_utc = Input(shape=[1], name='has_utc')
+    pct_caps = Input(shape=[1], name='pct_caps')
+    has_ethnicity = Input(shape=[1], name='has_ethnicity')
+    has_ipaddr = Input(shape=[1], name='has_ipaddr')
     
     # word embedding layer
     
     if model_params['use_glove']:
         print('using glove embeddings')
-        x = Embedding(input_dim = model_params['emb_vocab_size'], 
+        emb_comment_text = Embedding(input_dim = model_params['emb_vocab_size'], 
                       output_dim = model_params['emb_out_size'],
                       weights = [data['embedding_matrix']],
                       input_length = model_params['emb_input_seq_len'],
                       trainable = False
-                      ) (inp)
+                      ) (comment_text)
     else:
-        x = Embedding(input_dim = model_params['emb_vocab_size'], 
-                      output_dim = model_params['emb_out_size']) (inp)
+        emb_comment_text = Embedding(input_dim = model_params['emb_vocab_size'], 
+                      output_dim = model_params['emb_out_size']) (comment_text)
+    
+    #try input_dim=1, output_dim=20
+    emb_has_utc = Embedding(input_dim = 2, output_dim = 2, input_length = 1) (has_utc)
+    
     
     # Regularization
-    prefilt_x = Dropout(0.25) (x)
+    prefilt_x = Dropout(0.25) (emb_comment_text)
     
     # our convolutional layers that we build in the below for loop
     convolutions = []
@@ -46,7 +54,7 @@ def build_cnn_model(model_params, data, filters = 100):
         x = prefilt_x
         
         
-        x = Conv1D(filters = 100,
+        x = Conv1D(filters = n_filters,
                    kernel_size = i, # filter length
                    padding = 'same', 
                    activation = 'elu', 
@@ -59,7 +67,11 @@ def build_cnn_model(model_params, data, filters = 100):
         convolutions.append(x)
     
     # merge convs into a single tensor
-    x = concatenate(convolutions)
+    convolutions = concatenate(convolutions)
+    x = concatenate([
+            Flatten()(emb_has_utc), #, has_ipaddr, 
+            convolutions
+            ])
     
     x = Dense(64, activation='elu') (x)
     x = Dropout(0.1) (x)
@@ -67,7 +79,7 @@ def build_cnn_model(model_params, data, filters = 100):
     x = Dropout(0.1)(x)
     x = Dense(data['y_train'].shape[1], activation = 'sigmoid') (x)
     
-    model = Model(inputs = inp, outputs = x)
+    model = Model(inputs = [comment_text, has_utc, pct_caps, has_ethnicity, has_ipaddr], outputs = x)
     
     return model
 
@@ -78,7 +90,7 @@ Keras Bidirectional RNN Model
 '''
 
 def build_lstm_model(model_params, data, n_units = 64):
-    inp = Input(shape = (model_params['emb_input_seq_len'],))
+    inp = Input(shape = (model_params['emb_input_seq_len'],), name='comment_text')
     
     if model_params['use_glove']:
         print('using glove embeddings')
@@ -118,7 +130,7 @@ Keras Bidirectional RNN Model
 '''
 
 def build_mlstm_model(model_params, data, n_units = 128):
-    inp = Input(shape = (model_params['emb_input_seq_len'],))
+    inp = Input(shape = (model_params['emb_input_seq_len'],), name='comment_text')
     
     if model_params['use_glove']:
         print('using glove embeddings')
@@ -150,8 +162,27 @@ def build_mlstm_model(model_params, data, n_units = 128):
     x = Dropout(0.1) (x)
     x = Dense(data['y_train'].shape[1], activation = 'sigmoid') (x)
     
-    model = Model(inputs = inp, outputs = x)
-
+    model = Model(inputs = inp, outputs = x, name='cnn_model')
+    
     return model
     
-
+def build_ensemble(y_preds_all, data):
+#    inp = Input()
+    
+    y_preds_all = Input(shape=(y_preds_all.shape[1], ), name='y_preds_all')
+    has_utc = Input(shape=[1], name='has_utc')
+    pct_caps = Input(shape=[1], name='pct_caps')
+    #has_ethnicity = Input(shape=[1], name='has_ethnicity')
+    #has_ipaddr = Input(shape=[1], name='has_ipaddr')
+    
+    x = keras.layers.concatenate([y_preds_all, has_utc, pct_caps])
+    x = Dense(64, activation='relu')(x)
+    x = Dense(64, activation='relu')(x)
+    x = Dropout(0.1)(x)
+    x = Dense(64, activation='relu')(x)
+    out = Dense(data['y_train'].shape[1], activation='sigmoid', name='output')(x)
+    
+    model = Model(inputs = [y_preds_all, has_utc, pct_caps], outputs=out)
+    
+    return model
+    
