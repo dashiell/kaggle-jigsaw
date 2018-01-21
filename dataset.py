@@ -24,6 +24,7 @@ import re
 # contains_condescending words
 # contains_date ( like (UTC) see examples... few negative)
 # contanis_nice ( e.g. Hello, Welcome, Hey, )
+# remove false positives from the training set..
 
 GLOVE_PATH = '../input/glove.840B.300d.txt'
 TRAIN_PATH = '../input/train.csv'
@@ -43,8 +44,10 @@ embed_dict = {
         }
 
 
-def get_keras_dict(embed_dict, comment_text):
+def get_keras_dict(comment_text):
     """data for keras"""
+    
+    embed_dict = get_embed_dict()
     
     # integer encode each word in each document / sample. 
     seq_comment_text = embed_dict['tokenizer'].texts_to_sequences(comment_text)
@@ -54,7 +57,7 @@ def get_keras_dict(embed_dict, comment_text):
     
     #encoder = OneHotEncoder()
     
-    has_utc = [bool(re.search(r'(UTC)', t)) for t in comment_text]
+    #has_utc = [bool(re.search(r'(UTC)', t)) for t in comment_text]
     #has_utc = comment_text.str.contains('(UTC)').values.reshape(-1,1)
     #has_utc = encoder.fit_transform(has_utc).toarray()
     
@@ -67,7 +70,7 @@ def get_keras_dict(embed_dict, comment_text):
     #has_ethnicity = comment_text.str.contains(r'jew', case=False)
     X = {
             'comment_text' : padded_seq,
-            'has_utc' : np.array(has_utc),
+            #'has_utc' : np.array(has_utc),
             #'pct_caps' : pct_caps,
             #'has_ethnicity' : has_ethnicity,
             #'has_ipaddr' : has_ipaddr
@@ -159,10 +162,16 @@ def load(use_glove = True):
     if not path.exists(EMBED_DICT_PATH):
         all_comment_text = np.hstack((X_train, X_test))
         _create_embed_dict(all_comment_text)
+            
+    embed_dict['use_glove'] = use_glove                   
     
-    embed_dict = pickle.load(open(EMBED_DICT_PATH, 'rb'))
-        
-    embed_dict['use_glove'] = use_glove
-                    
+    return X_train, X_test, y_train
+
+def get_embed_dict():
     
-    return X_train, X_test, y_train, embed_dict
+    try: 
+        embed_dict = pickle.load(open(EMBED_DICT_PATH, 'rb'))
+    except FileNotFoundError:
+        load(use_glove = True)
+    
+    return embed_dict

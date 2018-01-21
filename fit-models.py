@@ -6,128 +6,140 @@
 Fit the model on the training set, test on validation set
 """
 import dataset
-from Models import BuildModels
-from keras.callbacks import EarlyStopping, ModelCheckpoint
-from sklearn.model_selection import StratifiedKFold
+from Models import CNNModel, LSTMModel, MLSTMModel, EnsembleModel
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from keras import backend as K
 import numpy as np
+import pandas as pd
 import gc
+import xgboost as xgb
+
 
 TRAIN_META_PATH = '../meta/train.npy'
 TEST_META_PATH = '../meta/test.npy'
 
-def fit(x1, x2, y1, y2, model, batch_size, checkpoint_path):
 
-    # define callbacks
-    cb_earlystop = EarlyStopping(
-            monitor = 'val_loss',
-            mode = 'min',
-            patience = 2,
-            min_delta = .001,
-            #save_best_only=True
-            )
+def create_meta_data():
+  
+    # load the embed_dict and data dictionaries (see data.py)
+    X_train, X_test, y_train = dataset.load()
     
-    cb_checkpoint = ModelCheckpoint(
-            checkpoint_path, 
-            monitor = 'val_loss', 
-            mode = 'min',
-            verbose = 1,
-            save_best_only = True, 
-            )
+    all_models = [CNNModel, LSTMModel, MLSTMModel]
     
-    model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy'])   
-    #import numpy as np
-    #data['X_train']['has_utc'] = np.array(data['X_train']['has_utc'])
-
-    model.fit(x1, y1, 
-              epochs = 20, 
-              batch_size = batch_size,  
-              callbacks = [cb_earlystop, cb_checkpoint],
-              validation_data = (x2, y2),
-              shuffle = False
-            )
+    train_meta_preds = np.zeros((y_train.shape[0], y_train.shape[1]*len(all_models)))
+    test_meta_preds = np.zeros((X_test.shape[0], y_train.shape[1]*len(all_models)))
     
-
+    n_splits = 10
     
-# load the embed_dict and data dictionaries (see data.py)
-X_train, X_test, y_train, embed_dict = dataset.load()
-
-build_models = BuildModels(embed_dict)
-
-# build the model
-
-#lstm_model = models.build_lstm_model(embed_dict)
-#mlstm_model = models.build_mlstm_model(embed_dict)
-
-# predict on oof and test
-
-all_models = [build_models.cnn, build_models.lstm, build_models.mlstm]
-
-train_meta_preds = np.zeros((y_train.shape[0], y_train.shape[1]*len(all_models)))
-test_meta_preds = np.zeros((X_test.shape[0], y_train.shape[1]*len(all_models)))
-
-n_splits = 10
-
-any_positive_cat = np.sum(y_train, axis = 1)
-
-X_test_keras = dataset.get_keras_dict(embed_dict, X_test)
-
-model_ix = 0
-for curr_model in all_models:
+    any_positive_cat = np.sum(y_train, axis = 1)
     
-    # the out of fold predictions
-    oof_preds = np.zeros(shape=y_train.shape)
+    X_test_keras = dataset.get_keras_dict(X_test)
     
-    # full test set predictions
-    test_preds = []
-    for i in np.arange(0, n_splits):
-        test_preds.append( np.zeros(shape=(X_test.shape[0], 6)) )
+    model_ix = 0
+    for curr_model in all_models:
         
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True )
-    
-    fold = 0
-    for train_index, valid_index in skf.split(X_train, any_positive_cat):
-        model = curr_model()
-        x1, x2 = X_train[train_index], X_train[valid_index]
-        y1, y2 = y_train[train_index], y_train[valid_index]
+        # the out of fold predictions
+        oof_preds = np.zeros(shape=y_train.shape)
         
-        # X_train, X_valid for keras
-        x1k = dataset.get_keras_dict(embed_dict, x1)
-        x2k = dataset.get_keras_dict(embed_dict, x2)
+        # full test set predictions
+        test_preds = []
+        for i in np.arange(0, n_splits):
+            test_preds.append( np.zeros(shape=(X_test.shape[0], 6)) )
+            
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True )
         
-        checkpoint_path = "checkpoint-%s.hdf5" % (curr_model.__name__)
-        fit(x1k,x2k,y1,y2, model = model, batch_size = 128, checkpoint_path = checkpoint_path)
-        model.load_weights(checkpoint_path)
-        model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accuracy'])
+        fold = 0
+        for train_index, valid_index in skf.split(X_train, any_positive_cat):
+            print('~~training fold:', fold)
+            model = curr_model()
+            
+            x1, x2 = X_train[train_index], X_train[valid_index]
+            y1, y2 = y_train[train_index], y_train[valid_index]
+            
+            # X_train, X_valid for keras
+            x1k = dataset.get_keras_dict(x1)
+            x2k = dataset.get_keras_dict(x2)
+                   
+            ######### batch size WAS ~~~~ 128 ~~~ #########
+             
+            model.fit(x1k,x2k,y1,y2, epochs = 20, batch_size = 128)
+    
+            # create the out-of-fold predictions 
+            oof_preds[valid_index] = model.predict_using_best_weights(x2k, batch_size = 128)
+            # create the predictions on the test set
+            test_preds[fold] = model.predict_using_best_weights(X_test_keras, batch_size = 128)
+            
+            fold +=1
+            
+            # reset the weights, free up some system and GPU memory for the next fit
+            del model
+            gc.collect()
+            K.clear_session()
         
-        # create the out-of-fold predictions 
-        oof_preds[valid_index] = model.predict(x2k, batch_size = 128)
-        # create the predictions on the test set
-        test_preds[fold] = model.predict(X_test_keras, batch_size = 128)
+        # get mean of all the test_pred matrices
+        test_mean = np.mean(test_preds, axis=0)
         
-        fold +=1
+        first_col = model_ix * 6
+        last_col = first_col + 6
         
-        # free up some system and GPU memory for the next fit
-        del model
-        gc.collect()
-        K.clear_session()
+        # put the model oof predictions into a big matrix of all model preds
+        train_meta_preds[:, first_col:last_col] = oof_preds
+        # put the models test predictions into a matrix of all model preds
+        test_meta_preds[:, first_col:last_col] = test_mean
+        
+        # save this for 
+        np.save(TRAIN_META_PATH, train_meta_preds)
+        np.save(TEST_META_PATH, test_meta_preds)
+        
+        model_ix += 1
+
+
+def get_keras_meta(oof_preds):
+    X = {
+            'oof_preds' : oof_preds,
+            # add other data
+    }
+    return X
+
+def train_on_meta():
+    X_train = np.load(TRAIN_META_PATH)
+    print(X_train.shape)
+    y_cols = dataset.y_cols
+    y_train = pd.read_csv('../input/train.csv')[y_cols].values
     
-    # get mean of all the test_pred matrices
-    test_mean = np.mean(test_preds, axis=0)
+    x1,x2,y1,y2 = train_test_split(X_train, y_train, test_size=0.1, shuffle=True)
     
-    first_col = model_ix * 6
-    last_col = first_col + 6
+    X_test = np.load(TEST_META_PATH)
     
-    # put the model oof predictions into a big matrix of all model preds
-    train_meta_preds[:, first_col:last_col] = oof_preds
-    # put the models test predictions into a matrix of all model preds
-    test_meta_preds[:, first_col:last_col] = test_mean
+    print(y1.shape)
+    '''
+    x1k = get_keras_meta(x1)
+    x2k = get_keras_meta(x2)
     
-    # save this for 
-    np.save(TRAIN_META_PATH, train_meta_preds)
-    np.save(TEST_META_PATH, test_meta_preds)
+    model = EnsembleModel()
+    model.fit(x1k,x2k,y1,y2, epochs = 20, batch_size = 64)
+    '''
+    from xgboost import XGBRegressor
+    from sklearn.multioutput import MultiOutputRegressor
+    from sklearn.metrics import log_loss
     
-    model_ix += 1
+    model = MultiOutputRegressor(XGBRegressor(objective='reg:linear'))
+    #model.fit(x1, y1)
+    #preds = model.predict(x2)
+    #ll = log_loss(y2, preds)
+    #print('ll {}'.format(ll))
+    
+    model.fit(X_train, y_train)
+    y_preds = model.predict(X_test)
+    
+    return y_preds
+
+
+
+
+create_meta_data()
+#y_preds = train_on_meta()            
+
 
 '''
 
@@ -148,9 +160,10 @@ ensemble.fit(data['X_train'], data['y_train'],
 import pandas as pd
 test = pd.read_csv('../input/test.csv')
 
-
 y_preds = (y_pred_cnn + y_pred_lstm + y_pred_mlstm) / 3
+'''
 
+test = pd.read_csv('../input/test.csv')
 submit = pd.DataFrame()
     
 submit['id'] = test.loc[:, 'id']
@@ -158,6 +171,5 @@ submit['id'] = test.loc[:, 'id']
 ### todo, clipping
 ## todo, if common obsenity present, at least mark 1 flag 1, if this holds true
 
-submit = pd.concat([submit, pd.DataFrame(y_preds, columns=data['y_cols'])], axis=1)
+submit = pd.concat([submit, pd.DataFrame(y_preds, columns=dataset.y_cols)], axis=1)
 submit.to_csv('submission.csv', index=False)
-'''
